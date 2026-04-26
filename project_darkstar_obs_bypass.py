@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
+v1.0.0 by Tristan Smith @theProjet · github.com/theProject
+
 Project darkStar: the OBS Raspberry Pi-pass (bypass lol)
 Pi-native OBSBOT Meet SE control panel using standard Linux V4L2 controls.
 
 This app avoids the x86_64-only OBSBOT SDK and does not require OBS Studio.
 It controls any camera features exposed through /dev/video0 via v4l2-ctl,
 and launches live preview through ffplay using MJPEG.
+
+To Do:
+- Add more controls as needed, and group them in a more user-friendly way.
+- Add recording feature using ffmpeg.
+- Add audio recording if supported by the camera.
 
 Recommended packages:
     sudo apt update
