@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-By Tristan Smith @theProjet · github.com/theProject
+by Tristan Smith @theProjet · github.com/theProject
 Project darkStar: The OBS Raspberry Pi-Pass
-Version 3 - Clean recording, optional timestamp overlay, camera audio, timer, and review scrubbing.
+Version 2 - Preview, PTZ controls, snapshots, recording, timer, audio, and review scrubbing.
 
 Pi-native OBSBOT / UVC camera control panel using standard Linux V4L2 controls.
 
@@ -12,7 +12,7 @@ previews through ffplay, and records sessions through ffmpeg.
 
 Recommended packages:
     sudo apt update
-    sudo apt install -y python3-tk v4l-utils ffmpeg alsa-utils fonts-dejavu-core
+    sudo apt install -y python3-tk v4l-utils ffmpeg alsa-utils
 
 Run:
     python3 project_darkstar_obs_bypass.py
@@ -37,7 +37,7 @@ from tkinter import filedialog, messagebox, ttk
 
 
 APP_NAME = "Project darkStar: The OBS Raspberry Pi-Pass"
-APP_VERSION = "3.0.0"
+APP_VERSION = "2.0.0"
 DEFAULT_DEVICE = "/dev/video0"
 DEFAULT_PREVIEW_SIZE = "1280x720"
 DEFAULT_PREVIEW_FPS = 30
@@ -46,7 +46,6 @@ PAN_TILT_UNITS_PER_DEGREE = 3600
 CONFIG_DIR = Path.home() / ".config" / "darkstar-pi-pass"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_RECORD_DIR = Path.home() / "Videos" / "darkStar"
-DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
 
 @dataclass
@@ -177,7 +176,7 @@ def list_formats_text(device: str) -> str:
 
 
 def list_alsa_capture_devices() -> List[str]:
-    """Return friendly ALSA capture device strings, e.g. hw:2,0 - OBSBOT Meet SE."""
+    """Return hw:X,Y ALSA capture devices from arecord -l."""
     if not command_exists("arecord"):
         return []
 
@@ -186,19 +185,13 @@ def list_alsa_capture_devices() -> List[str]:
         return []
 
     devices: List[str] = []
-    current_card_label = ""
-    card_pattern = re.compile(r"^card\s+(\d+):\s+([^\[]+)\[([^\]]+)\],\s+device\s+(\d+):\s+([^\[]+)\[([^\]]+)\]")
-
+    pattern = re.compile(r"^card\s+(\d+):\s+.*?,\s+device\s+(\d+):\s+(.*?)\s*$")
     for line in result.stdout.splitlines():
-        stripped = line.strip()
-        match = card_pattern.match(stripped)
+        match = pattern.match(line.strip())
         if not match:
             continue
-        card_num, short_card, long_card, dev_num, short_dev, long_dev = match.groups()
-        hw = f"hw:{card_num},{dev_num}"
-        label = f"{long_card.strip()} / {long_dev.strip()}"
-        devices.append(f"{hw}  -  {label}")
-
+        card, device, label = match.groups()
+        devices.append(f"hw:{card},{device}  -  {label}")
     return devices
 
 
@@ -227,12 +220,6 @@ def save_config(config: Dict[str, str]) -> None:
     CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
-def truthy_config(value: Optional[str], default: bool = False) -> bool:
-    if value is None:
-        return default
-    return value.lower() in {"1", "true", "yes", "on"}
-
-
 class DarkStarApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -240,8 +227,8 @@ class DarkStarApp(tk.Tk):
         self.config_data = load_config()
 
         self.title(f"{APP_NAME} v{APP_VERSION}")
-        self.geometry("1220x900")
-        self.minsize(1040, 740)
+        self.geometry("1200x880")
+        self.minsize(1000, 720)
 
         self.device_var = tk.StringVar(value=self.config_data.get("device", DEFAULT_DEVICE))
         self.status_var = tk.StringVar(value="Standing by. Camera controls will load from /dev/video0.")
@@ -251,11 +238,8 @@ class DarkStarApp(tk.Tk):
         self.record_dir_var = tk.StringVar(value=self.config_data.get("record_dir", str(DEFAULT_RECORD_DIR)))
         self.record_preset_var = tk.StringVar(value=self.config_data.get("record_preset", "720p30"))
         self.record_container_var = tk.StringVar(value=self.config_data.get("record_container", "mkv"))
-        self.audio_enabled_var = tk.BooleanVar(value=truthy_config(self.config_data.get("audio_enabled"), False))
+        self.audio_enabled_var = tk.BooleanVar(value=self.config_data.get("audio_enabled", "false") == "true")
         self.audio_device_var = tk.StringVar(value=self.config_data.get("audio_device", "default"))
-        self.timestamp_enabled_var = tk.BooleanVar(value=truthy_config(self.config_data.get("timestamp_enabled"), False))
-        self.timestamp_position_var = tk.StringVar(value=self.config_data.get("timestamp_position", "Bottom Left"))
-        self.timestamp_text_var = tk.StringVar(value=self.config_data.get("timestamp_text", "darkStar %Y-%m-%d %H\\:%M\\:%S"))
         self.record_status_var = tk.StringVar(value="Not recording")
         self.record_timer_var = tk.StringVar(value="00:00:00")
         self.review_offset_var = tk.IntVar(value=0)
@@ -315,7 +299,7 @@ class DarkStarApp(tk.Tk):
         title_box = ttk.Frame(header, style="Dark.TFrame")
         title_box.grid(row=0, column=0, sticky="w")
         ttk.Label(title_box, text="Project darkStar", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(title_box, text="The OBS Raspberry Pi-Pass · clean capture, optional timestamp, camera audio", style="Subheader.TLabel").pack(anchor="w")
+        ttk.Label(title_box, text="The OBS Raspberry Pi-Pass · preview, control, record", style="Subheader.TLabel").pack(anchor="w")
 
         device_box = ttk.Frame(header, style="Dark.TFrame")
         device_box.grid(row=0, column=1, sticky="e")
@@ -410,29 +394,12 @@ class DarkStarApp(tk.Tk):
         self.audio_combo.grid(row=6, column=1, sticky="ew", pady=3, padx=(0, 6))
         ttk.Button(frame, text="Audio Scan", command=self.refresh_audio_devices).grid(row=6, column=2, sticky="ew", pady=3)
 
-        ttk.Checkbutton(frame, text="Burn timestamp overlay", variable=self.timestamp_enabled_var, command=self.save_preferences).grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(10, 3)
-        )
-
-        ttk.Label(frame, text="Stamp pos", style="Panel.TLabel").grid(row=8, column=0, sticky="w", pady=3)
-        ttk.Combobox(
-            frame,
-            textvariable=self.timestamp_position_var,
-            values=["Bottom Left", "Bottom Right", "Top Left", "Top Right"],
-            state="readonly",
-            width=14,
-        ).grid(row=8, column=1, sticky="ew", pady=3, padx=(0, 6))
-        ttk.Button(frame, text="Clean Default", command=self.disable_timestamp_overlay).grid(row=8, column=2, sticky="ew", pady=3)
-
-        ttk.Label(frame, text="Stamp text", style="Panel.TLabel").grid(row=9, column=0, sticky="w", pady=3)
-        ttk.Entry(frame, textvariable=self.timestamp_text_var, width=24).grid(row=9, column=1, columnspan=2, sticky="ew", pady=3)
-
     def _build_review_panel(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Review / Light Scrub", style="Card.TLabelframe", padding=12)
         frame.pack(fill="x", pady=(0, 12))
         frame.columnconfigure(0, weight=1)
 
-        ttk.Label(frame, textvariable=self.review_length_var, style="Muted.TLabel", wraplength=330).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(frame, textvariable=self.review_length_var, style="Muted.TLabel", wraplength=310).grid(row=0, column=0, columnspan=3, sticky="w")
         self.review_scale = ttk.Scale(
             frame,
             from_=0,
@@ -523,11 +490,6 @@ class DarkStarApp(tk.Tk):
     def set_status(self, message: str) -> None:
         self.status_var.set(message)
 
-    def disable_timestamp_overlay(self) -> None:
-        self.timestamp_enabled_var.set(False)
-        self.save_preferences()
-        self.set_status("Timestamp overlay disabled. Future recordings will be clean unless you turn it back on.")
-
     def save_preferences(self) -> None:
         config = {
             "device": self.device_var.get(),
@@ -539,9 +501,6 @@ class DarkStarApp(tk.Tk):
             "record_container": self.record_container_var.get(),
             "audio_enabled": "true" if self.audio_enabled_var.get() else "false",
             "audio_device": self.audio_device_var.get(),
-            "timestamp_enabled": "true" if self.timestamp_enabled_var.get() else "false",
-            "timestamp_position": self.timestamp_position_var.get(),
-            "timestamp_text": self.timestamp_text_var.get(),
         }
         save_config(config)
 
@@ -815,6 +774,8 @@ class DarkStarApp(tk.Tk):
                 messagebox.showwarning(APP_NAME, "Camera does not expose auto_exposure.")
             return
 
+        # On this OBSBOT Meet SE, value 0 showed as Auto Mode.
+        # If menu labels are present, prefer the item containing "auto".
         auto_value = 0
         for value, label in control.menu_items.items():
             if "auto" in label.lower():
@@ -850,7 +811,7 @@ class DarkStarApp(tk.Tk):
             "ffplay",
             "-hide_banner",
             "-loglevel",
-            "error",
+            "warning",
             "-f",
             "v4l2",
             "-input_format",
@@ -924,11 +885,9 @@ class DarkStarApp(tk.Tk):
 
     def refresh_audio_devices(self) -> None:
         devices = ["default"] + list_alsa_capture_devices()
-        if hasattr(self, "audio_combo"):
-            self.audio_combo.configure(values=devices)
+        self.audio_combo.configure(values=devices) if hasattr(self, "audio_combo") else None
         if self.audio_device_var.get() not in devices:
-            obsbot_match = next((item for item in devices if "obsbot" in item.lower() or "remo" in item.lower() or "meet" in item.lower()), None)
-            self.audio_device_var.set(obsbot_match or "default")
+            self.audio_device_var.set("default")
         self.save_preferences()
 
     def choose_record_folder(self) -> None:
@@ -963,37 +922,8 @@ class DarkStarApp(tk.Tk):
             return selected.split()[0]
         return selected or "default"
 
-    def timestamp_filter(self) -> str:
-        text = self.timestamp_text_var.get().strip() or "darkStar %Y-%m-%d %H\\:%M\\:%S"
-        escaped = text.replace("'", r"\'")
-        position = self.timestamp_position_var.get()
-
-        x = "20"
-        y = "h-th-20"
-        if position == "Bottom Right":
-            x = "w-tw-20"
-            y = "h-th-20"
-        elif position == "Top Left":
-            x = "20"
-            y = "20"
-        elif position == "Top Right":
-            x = "w-tw-20"
-            y = "20"
-
-        font_clause = f"fontfile={DEFAULT_FONT}:" if Path(DEFAULT_FONT).exists() else ""
-        return (
-            "drawtext="
-            f"{font_clause}"
-            f"text='{escaped}':"
-            "fontcolor=white:fontsize=24:"
-            "box=1:boxcolor=black@0.55:boxborderw=10:"
-            f"x={x}:y={y}"
-        )
-
     def build_record_command(self, output_path: Path) -> List[str]:
         size, fps = self.record_preset_to_size_fps()
-        burn_timestamp = self.timestamp_enabled_var.get()
-
         args = [
             "ffmpeg",
             "-y",
@@ -1013,22 +943,13 @@ class DarkStarApp(tk.Tk):
         ]
 
         if self.audio_enabled_var.get():
-            args.extend(["-f", "alsa", "-thread_queue_size", "1024", "-i", self.selected_audio_hw()])
-
-        if burn_timestamp:
-            # Timestamp overlay requires decoding and re-encoding. Ultrafast keeps this realistic on a Pi.
-            args.extend(["-vf", self.timestamp_filter(), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p"])
+            args.extend(["-f", "alsa", "-i", self.selected_audio_hw()])
+            if output_path.suffix.lower() == ".mp4":
+                args.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"])
+            else:
+                args.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "128k"])
         else:
-            # Clean mode copies the MJPEG camera stream directly. Fast, light, and no burned overlay.
-            args.extend(["-c:v", "copy"])
-
-        if self.audio_enabled_var.get():
-            args.extend(["-c:a", "aac", "-b:a", "128k", "-ar", "48000"])
-        else:
-            args.append("-an")
-
-        if output_path.suffix.lower() == ".mp4":
-            args.extend(["-movflags", "+faststart"])
+            args.extend(["-an", "-c:v", "copy"])
 
         args.append(str(output_path))
         return args
@@ -1066,15 +987,12 @@ class DarkStarApp(tk.Tk):
 
         preset = self.record_preset_var.get()
         audio_label = "audio" if self.audio_enabled_var.get() else "silent"
-        stamp_label = "timestamp" if self.timestamp_enabled_var.get() else "clean"
-        output_path = folder / f"darkstar-session-{preset}-{audio_label}-{stamp_label}-{safe_filename_stamp()}.{container}"
+        output_path = folder / f"darkstar-session-{preset}-{audio_label}-{safe_filename_stamp()}.{container}"
         command = self.build_record_command(output_path)
 
         log_path = folder / f"{output_path.stem}.log"
         try:
             self.record_log_file = open(log_path, "w", encoding="utf-8")
-            self.record_log_file.write("Command:\n" + " ".join(command) + "\n\n")
-            self.record_log_file.flush()
             self.record_process = subprocess.Popen(
                 command,
                 stdin=subprocess.PIPE,
@@ -1164,7 +1082,7 @@ class DarkStarApp(tk.Tk):
             "ffplay",
             "-hide_banner",
             "-loglevel",
-            "error",
+            "warning",
             "-ss",
             str(offset),
             str(self.last_recording_path),
@@ -1245,7 +1163,7 @@ def main() -> int:
     if missing:
         print(f"Missing command(s): {', '.join(missing)}", file=sys.stderr)
         print("Install dependencies with:", file=sys.stderr)
-        print("  sudo apt update && sudo apt install -y python3-tk v4l-utils ffmpeg alsa-utils fonts-dejavu-core", file=sys.stderr)
+        print("  sudo apt update && sudo apt install -y python3-tk v4l-utils ffmpeg alsa-utils", file=sys.stderr)
         return 1
 
     app = DarkStarApp()
