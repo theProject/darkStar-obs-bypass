@@ -114,22 +114,6 @@ Other USB cameras may work if they expose useful V4L2 controls.
 
 ## How it works
 
-```mermaid
-graph TD
-    A[USB Camera / OBSBOT Meet SE] --> B[Linux UVC Driver]
-    B --> C[/dev/video0]
-    C --> D[v4l2-ctl]
-    C --> E[ffplay]
-    D --> F[Camera Controls]
-    E --> G[Live Preview]
-    F --> H[darkStar GUI]
-    G --> H
-    H --> I[Pan / Tilt / Zoom]
-    H --> J[Focus / Exposure / White Balance]
-    H --> K[Image Tuning]
-    H --> L[Snapshot Capture]
-```
-
 The app does not decode or control the camera through a private SDK. It calls the same Linux tools you would normally use manually:
 
 ```bash
